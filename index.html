@@ -79,6 +79,8 @@ main{display:flex;flex-direction:column;gap:16px;min-width:0}
 .msg{width:100%;min-height:190px;font-family:var(--f-mono);font-size:12px;line-height:1.5;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);resize:vertical}
 .status{font-size:12.5px;color:var(--muted);margin:12px 0 0}
 #status:empty{display:none}
+#msgCount{margin-top:4px}
+#msgCount.over{color:var(--alta);font-weight:600}
 .status.ok{color:var(--accent)}.status.err{color:var(--alta)}
 .filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:12px}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -213,6 +215,7 @@ footer{color:var(--muted);font-size:12px;max-width:95ch}
         <div>
           <div class="filters" style="margin-bottom:6px"><label class="lbl" for="msg">Mensagem</label><button class="btn" id="copyMsg" type="button" style="padding:5px 10px;font-size:12px">Copiar mensagem</button></div>
           <textarea class="msg" id="msg" spellcheck="false"></textarea>
+          <div class="cs" id="msgCount" aria-live="polite"></div>
         </div>
         </div>
       </details>
@@ -268,12 +271,28 @@ new MutationObserver(()=>{if(!mobile.matches)return;clearTimeout(toastT);if($('s
 
 function title(s){return s.toLowerCase().replace(/(^|\s)(\S)/g,(m,a,b)=>a+b.toUpperCase()).replace(/\b(De|Da|Do|Dos|Das|E)\b/g,w=>w.toLowerCase()).replace(/\bLtda\b/g,'Ltda')}
 function greet(rep){return /LTDA|REPRESENTA/.test(rep)?'Olá, pessoal da '+title(rep).replace(/\s+Ltda$/,'')+'!':'Olá, '+title(rep.split(' ')[0])+'!'}
+const MSG_LIMIT=1000; // o WhatsApp corta a legenda de arquivos em ~1.024 caracteres
+const int=v=>Math.round(v).toLocaleString('pt-BR');
+function shortName(c){return c.replace(/\s+(LTDA\.?|EIRELI|ME|EPP|S\/A|S\.A\.?)(\s+-\s+ME)?\.?$/i,'').replace(/\s+(LTDA\.?|EIRELI|ME|EPP)$/i,'').trim()}
 function buildMsg(d){
-  const al=d.clientes.filter(x=>x.p==='Alta'), top=al.slice(0,15);
-  let t=`${greet(d.rep)}\n\nSegue sua lista de *${d.n} clientes* que compraram entre janeiro e agosto e ainda *não compraram em setembro* (R$ ${brl(d.f)} faturados no período).\n\n`;
-  if(al.length){t+=`*Prioridade alta – última compra em agosto (${al.length}):*\n`+top.map((x,i)=>`${i+1}. ${x.c} – ${title(x.cid.split(',')[0])} – R$ ${brl(x.t)}`).join('\n');if(al.length>15)t+=`\n…e mais ${al.length-15} na planilha.`;t+='\n\n';}
-  t+=`Também tem ${d.m} de prioridade média (última compra em junho/julho) e ${d.b} de prioridade baixa (janeiro a maio).\n\nA planilha completa vai em anexo. Por favor, preencha a coluna "Retorno / observação" conforme for falando com cada cliente.`;
-  return t;
+  const al=d.clientes.filter(x=>x.p==='Alta');
+  const head=`${greet(d.rep)}\n\n*${d.n} clientes* seus compraram de jan a ago e *não compraram em setembro* (R$ ${int(d.f)} no período).\n\n`;
+  const tail=`\n\nMédia (jun/jul): ${d.m} · Baixa (jan–mai): ${d.b}.\nLista completa na planilha anexa. Anote o retorno na coluna "Retorno / observação".`;
+  if(!al.length)return head.trimEnd()+tail;
+  let body=`*Alta – última compra em agosto (${al.length}):*`, used=0;
+  for(let i=0;i<al.length;i++){
+    const x=al[i], line=`\n${i+1}. ${shortName(x.c)} – ${title(x.cid.split(',')[0])} – R$ ${int(x.t)}`;
+    const rest=al.length-(i+1), more=rest?`\n…e mais ${rest} na planilha.`:'';
+    const restIfStop=al.length-i, moreIfStop=`\n…e mais ${restIfStop} na planilha.`;
+    if((head+body+line+more+tail).length>MSG_LIMIT){body+=moreIfStop;used=-1;break}
+    body+=line;used=i+1;
+  }
+  return head+body+tail;
+}
+function updateCount(){
+  const n=$('msg').value.length, el=$('msgCount');
+  el.textContent=n.toLocaleString('pt-BR')+' / '+MSG_LIMIT.toLocaleString('pt-BR')+' caracteres'+(n>MSG_LIMIT?' · o WhatsApp vai cortar o final quando for junto com a planilha':'');
+  el.className='cs'+(n>MSG_LIMIT?' over':'');
 }
 function phoneKey(d){return 'wa:'+d.rep}
 function updateWa(){
@@ -287,7 +306,7 @@ function select(i){
   $('repSelect').value=i;
   $('vName').textContent=d.rep;
   $('kN').textContent=d.n;$('kA').textContent=d.a;$('kM').textContent=d.m;$('kB').textContent=d.b;$('kF').textContent=brlK(d.f);
-  $('msg').value=buildMsg(d);$('phone').value=store.get(phoneKey(d))||'';
+  $('msg').value=buildMsg(d);updateCount();$('phone').value=store.get(phoneKey(d))||'';
   $('status').textContent='';$('status').className='status';
   updateWa();render();store.set('rep',d.rep);
 }
@@ -304,7 +323,7 @@ function render(){
 $('chips').addEventListener('click',e=>{const b=e.target.closest('.chip');if(!b)return;pf=b.dataset.p;document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed',c===b?'true':'false'));render()});
 $('q').addEventListener('input',e=>{q=e.target.value;render()});
 $('phone').addEventListener('input',()=>{store.set(phoneKey(DATA[cur]),$('phone').value);updateWa()});
-$('msg').addEventListener('input',updateWa);
+$('msg').addEventListener('input',()=>{updateWa();updateCount()});
 $('copyMsg').addEventListener('click',()=>{const t=$('msg').value;const s=$('status');
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(()=>{s.textContent='Mensagem copiada.';s.className='status ok'},()=>{$('msg').select();s.textContent='Mensagem selecionada. Use Ctrl+C para copiar.';s.className='status'})}else{$('msg').select()}});
 
